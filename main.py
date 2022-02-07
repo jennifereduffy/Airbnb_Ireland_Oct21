@@ -13,6 +13,7 @@ import numpy as np
 import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
+import missingno as msno
 
 # Import Reviews dataset
 df_reviews = pd.read_csv(r"C:\Users\jenni\Documents\Datasets\Ireland Oct 21 Airbnb\reviews.csv")
@@ -289,6 +290,203 @@ sns.color_palette("flare", as_cmap=True)
 sns.boxplot(x=df_listings['room_type'], y=df_listings['price'])
 plt.yticks(range(0, 2600, 100))
 plt.show()
+
+# Check counts of each room_type before proceeding
+print(df_listings['room_type'].value_counts())
+
+# Check how many entire homes have a price > €300 per night aside from the two homes accommodating 16 removed
+print(df_listings.loc[(df_listings['room_type'] == 'Entire home/apt') & (df_listings['price'] > 300), 'id'].count())
+# Check how many people on average these listings say they accommodate
+print(df_listings.loc[(df_listings['room_type'] == 'Entire home/apt') &
+                      (df_listings['price'] > 300), 'accommodates'].mean())
+
+# Only 819 (+2) of the entire homes which have been active in or after 2019 have a price > €300 per night.
+# On average these claim to accommodate 9.7 people.
+# The majority of the homes are priced in a relatively narrow range.
+
+# Create a copy of df_listings with prices up to 1000 to get a clearer boxplot
+df_temp = df_listings.loc[df_listings['price'] <= 1000].copy()
+
+# Create boxplot to show overall distribution of nightly price for listings active since the start of 2019
+# by NUTS3 Region
+plt.figure(figsize=(15, 15))
+sns.color_palette("flare", as_cmap=True)
+sns.boxplot(x=df_temp['NUTS3_Region'], y=df_temp['price'], hue=df_temp['room_type'])
+plt.yticks(range(0, 1100, 100))
+plt.show()
+
+# Focussing on entire home/apts, we can see that the Dublin region has the highest prices.
+# The Midlands and Border regions have the lowest prices.
+# The South-West, West and Mid-East have similar median prices and have similar ranges for the top 25% of prices.
+
+# Have a look at Seasonality & Variability of Pricing by Day of Week & By Region
+# Import dataset
+df_calendar = pd.read_csv(r"C:\Users\jenni\Documents\Datasets\Ireland Oct 21 Airbnb\calendar.csv")
+
+# Take a look
+print(df_calendar.head())
+
+# Check data types
+df_calendar.info()
+
+# Drop columns not needed for analysis
+df_calendar.drop(columns=['available', 'adjusted_price', 'minimum_nights', 'maximum_nights'], inplace=True)
+
+# Convert price field to string
+df_calendar['price'] = df_calendar['price'].astype('string')
+# Remove dollar sign and commas in case of any
+df_calendar['price'] = df_calendar['price'].str.replace('$', '', regex=True)
+df_calendar['price'] = df_calendar['price'].str.replace(',', '', regex=True)
+# Convert price column to float dtype
+df_calendar['price'] = df_calendar['price'].astype(float)
+
+# Change type of date field to date
+df_calendar['date'] = pd.to_datetime(df_calendar['date'])
+# Add quarter column to df_calendar
+df_calendar['quarter'] = df_calendar['date'].dt.to_period('Q')
+# Change quarter column to string dtype
+df_calendar['quarter'] = df_calendar['quarter'].astype('str')
+# Remove the year from the quarter column so this way partial data for Q4 2021 and 2022 will combine to
+# make a full Q4
+df_calendar['quarter'] = df_calendar['quarter'].str.replace('2021', '')
+df_calendar['quarter'] = df_calendar['quarter'].str.replace('2022', '')
+
+df_calendar.info()
+
+# Look at the seasonality of pricing
+qtrly_avg = df_calendar.groupby(df_calendar['quarter'], sort=False)[['price']].mean()
+qtrly_avg.sort_values(by='quarter', axis=0, ascending=True, inplace=True)
+qtrly_avg.plot(kind='barh', figsize=(12, 7))
+plt.xlabel('average price for quarter')
+plt.xticks(range(0, 240, 10))
+
+# The graph shows a small variance in the average price of properties across the 4 seasons.
+# The average nightly price only varies from €220 in Q1 (quietest) to just under €230 in Q3 (busiest quarter).
+# The seasonality of average price follows the seasonality of reviews/stays but is very subtle.
+# It may be that relatively few Irish airbnb hosts are actively managing their calendar pricing.
+# This may be the norm, or due to Covid and the time of year the data was scraped.
+
+# Plot the monthly average price to see if this shows more variability
+monthly_avg = df_calendar.groupby(df_calendar['date'].dt.strftime('%B'), sort=False)[['price']].mean()
+monthly_avg.plot(kind='barh', figsize=(12, 7))
+plt.xlabel('monthly average price')
+plt.xticks(range(0, 240, 10))
+plt.show()
+
+# Monthly average price shows that there is variability in the calendar pricing with relatively
+# slightly higher average prices in busier months but the range is narrow.
+
+# Review Variability in Pricing by Day of Week
+
+# Create weekday column
+df_calendar['weekday'] = df_calendar['date'].dt.day_name()
+# Create a list for the days of the week to use for reindexing
+days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+# Create a sub dataframe with just weekday and price columns
+sub_df = df_calendar[['weekday', 'price']]
+# Groupby to get the average price by weekday and reindex using the days list
+sub_df = df_calendar.groupby(['weekday']).mean().reindex(days)
+# Drop 'listing_id' being the old index
+sub_df.drop('listing_id', axis=1, inplace=True)
+
+# Plot the average price by weekday
+sub_df.plot(figsize=(12, 7))
+ticks = list(range(0, 7, 1))
+labels = "Mon Tues Weds Thurs Fri Sat Sun".split()
+plt.xticks(ticks, labels)
+
+# This shows that the average price by weekday peaks on the weekend, with Saturday the most expensive,
+# followed by Friday and then Sunday. Prices are lowest on Monday to Wednesday and show a small increase
+# on Thursday. This would suggest that stays between 1-4 nights over the weekend are the most popular as
+# might be expected.
+
+# Next look at occupancy using the listings which were active throughout 2019, are prices in a narrow
+# range but occupancy is more variable?
+
+# Use a groupby to get the count of reviews by listing_id by quarter in 2019
+grp_reviews19_listing = df_reviews_2019.groupby(['listing_id', 'quarter_new']).agg({'listing_id': ['count']}).copy()
+
+# to flatten the multi-level columns
+grp_reviews19_listing.reset_index(inplace=True)
+
+print(grp_reviews19_listing.head())
+
+# Change quarter column to string dtype
+grp_reviews19_listing['quarter_new'] = grp_reviews19_listing['quarter_new'].astype('str')
+
+# Pivot to have listing_id in one column and each quarter be reflected in a column
+grp_reviews19_listing = pd.pivot_table(grp_reviews19_listing, values='listing_id_count', index='listing_id',
+                                       columns='quarter_new', aggfunc=np.sum)
+
+# Convert the listing_id from an index to a column
+grp_reviews19_listing.reset_index(level='listing_id', inplace=True)
+
+# Check
+grp_reviews19_listing.info()
+
+# Use msno matrix to see positional information for the missing values
+msno.matrix(grp_reviews19_listing)
+
+# Merge df_listings with grp_reviews19_listing to bring the quarterly review count columns in to df_listings
+df_listings = df_listings.merge(grp_reviews19_listing[['listing_id', '2019Q1', '2019Q2', '2019Q3', '2019Q4']],
+                                how='left', left_on='id', right_on='listing_id').drop(columns=['listing_id'])
+
+# Create a subset of the listings dataframe that contains listings active throughout 2019 to look at the data
+# with a full year of occupancy pre Covid.  Include listings with a review in 2019, first review on or before
+# 01/01/19 and last review on or after 31/12/2019.
+df_listings2019 = df_listings.loc[(df_listings['2019Q1'].notnull()) | (df_listings['2019Q2'].notnull()) |
+                                  (df_listings['2019Q3'].notnull()) | (df_listings['2019Q4'].notnull()) &
+                                  (df_listings['first_review'] <= '2019-01-01') &
+                                  (df_listings['last_review'] >= '2019-12-31'), :].copy()
+
+# Replace null values with 0s in quarter (review count columns)
+df_listings2019['2019Q1'] = df_listings2019['2019Q1'].fillna(0)
+df_listings2019['2019Q2'] = df_listings2019['2019Q2'].fillna(0)
+df_listings2019['2019Q3'] = df_listings2019['2019Q3'].fillna(0)
+df_listings2019['2019Q4'] = df_listings2019['2019Q4'].fillna(0)
+
+# Create a column with total reviews in 2019 for each listing
+df_listings2019['reviews_2019'] = df_listings2019['2019Q1'] + df_listings2019['2019Q2'] + \
+                                  df_listings2019['2019Q3'] + df_listings2019['2019Q4']
+
+# Based on an assumed 50% review rate as is used by Inside Airbnb themselves, the number of stays is
+# double the number of reviews.
+# For occupancy, an assumption also needs to be made about average length of stay (ALOS). Inside Airbnb uses
+# 3.0, however they have used 3 in any region where no public statements were made by Airbnb about average stays,
+# so this was not an informed assumption.
+# # Looking at data for Ireland and lengths of stay for trips in Ireland by Irish residents and overseas
+# visitors, I calculate a weighted average ALOS of 3.4 days (2.5 days for domestic trips and 6.5 days divided
+# between 1.5 locations for overseas visitors).
+# Cap occupancy at 70% as otherwise values arise > 100%.  This 70% (255.5 days) cap is used by Inside Airbnb
+# on the basis that it is a relatively high, but reasonable number for a highly occupied "hotel".
+# It controls for listings with a very high review rate etc.
+
+# create a list of conditions
+conditions = \
+    [(df_listings2019['minimum_nights'] > 3) &
+     ((df_listings2019['minimum_nights'] * df_listings2019['reviews_2019'] * 2) <= 255.5),
+     (df_listings2019['minimum_nights'] <= 3) & ((3.4 * df_listings2019['reviews_2019'] * 2) <= 255.5),
+     ((df_listings2019['minimum_nights'] * df_listings2019['reviews_2019'] * 2) > 255.5),
+     ((3.4 * df_listings2019['reviews_2019'] * 2) > 255.5)]
+
+# create a list of the values to assign for each condition
+values = [(df_listings2019['minimum_nights'] * df_listings2019['reviews_2019'] * 2),
+          (3.4 * df_listings2019['reviews_2019'] * 2), 255.5, 255.5]
+
+# create a new column and use np.select to assign values to it using our lists as arguments
+df_listings2019['occupancy_2019'] = np.select(conditions, values)
+
+# create a revenue (in thousands) column using the new occupancy column values multiplied by the price
+df_listings2019['revenue_2019'] = round((df_listings2019['occupancy_2019'] * df_listings2019['price'])/1000, 1)
+
+print(df_listings2019.head(5))
+
+# create a revenue (in thousands) column using the new occupancy column values multiplied by the price
+df_listings2019['revenue_2019'] = round((df_listings2019['occupancy_2019'] * df_listings2019['price']) / 1000, 1)
+
+df_listings2019.head(5)
+
+
 
 
 
