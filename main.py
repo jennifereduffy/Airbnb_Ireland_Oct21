@@ -17,6 +17,7 @@ import missingno as msno
 import re
 from sklearn.linear_model import LinearRegression
 import statsmodels.formula.api as smf
+from pandas.api.types import CategoricalDtype
 
 # Import Reviews dataset
 df_reviews = pd.read_csv(r"C:\Users\jenni\Documents\Datasets\Ireland Oct 21 Airbnb\reviews.csv")
@@ -637,7 +638,231 @@ plt.hist(df_entire2019['maximum_nights'], bins=bins_list)
 # or the max (1125),this should not make any notable difference
 df_entire2019.loc[df_entire2019['maximum_nights'] > 90, 'maximum_nights'] = 90
 
+# Create a scatter plot to see if there is a relationship between max nights and occupancy
+x = df_entire2019['maximum_nights']
+y = df_entire2019['occupancy_2019']
 
+plt.scatter(x, y)
+plt.xlabel('Maximum Nights Stay')
+plt.ylabel('Occupancy')
+plt.show()
+
+# Difficult to see relationship in scatter plot, use Linear Regression to calculate correlation coefficient
+
+# create X and y
+feature_cols = ['maximum_nights']
+X = df_entire2019[feature_cols]
+y = df_entire2019.occupancy_2019
+
+# follow the usual sklearn pattern: import, instantiate, fit
+lm = LinearRegression()
+lm.fit(X, y)
+
+# print intercept and coefficients
+print("Intercept is", lm.intercept_)
+print("Max nights coefficient is", lm.coef_)
+
+# This suggest that there is some positive correlation between maximum nights and occupancy so keep max nights field.
+
+# Next have a look at superhost and other reputational capital fields to see what relationships if any they have to
+# occupancy (and price)
+
+# Key criteria to become a Superhost below
+# Have had min 10 booked guest trips OR successfully completed 3 long term reservations that total min 100 nights
+# Have maintained a 50% review rate or higher.
+# Have maintained a 90% response rate or higher
+# Zero cancellations, except for situations that fall under Airbnb's Extenuating Circumstances policy.
+# Have maintained an overall 4.8/5 rating
+# Note exceptions have been made to superhost criteria due to Covid. Currently they don't have to meet the 10 bookings
+# in past year criteria.
+
+# Take a look at the listings with nan in host_is_superhost and look at most relevant other fields taking in to account
+# superhost criteria
+print(df_entire2019.loc[df_entire2019['host_is_superhost'].isna(),
+                        ['id', 'review_scores_rating', 'host_response_rate', 'number_of_reviews', 'reviews_2019']])
+
+# Check Airbnb site to see if the first two listings are superhosts given high review_scores_rating and complete the nan
+# values in host_is_superhost accordingly
+# https://www.airbnb.com/rooms/21722118 - YES
+# https://www.airbnb.com/rooms/24632132 - NO
+
+df_entire2019.loc[df_entire2019['id'] == 2172118, 'host_is_superhost'] = 1
+df_entire2019['host_is_superhost'].fillna(value=0, inplace=True)
+
+# Create a scatter plot of price and occupancy showing superhost and non superhost in different colours
+sns.relplot(x='occupancy_2019', y='price', hue='host_is_superhost', data=df_entire2019)
+
+# The scatter plot suggests superhosts have higher occupancy but is less clear regarding price.
+
+# There are listings with zero bedrooms.  Review before boxplots.
+print(df_entire2019.loc[df_entire2019['bedrooms'] == 0, :])
+
+# Check the description field to see if it contains the number of bedrooms
+print(df_listings.loc[df_listings['id'] == 34541926, 'description'])
+print(df_listings.loc[df_listings['id'] == 37377666, 'description'])
+print(df_listings.loc[df_listings['id'] == 18328816, 'description'])
+
+# Override 0 values in bedrooms field with bedroom count per description.  For Studios, use 1.
+df_entire2019['bedrooms'] = df_entire2019['bedrooms'].astype(int)
+df_entire2019.loc[df_entire2019['id'] == '34541926', 'bedrooms'] = 1
+df_entire2019.loc[df_entire2019['id'] == '37377666', 'bedrooms'] = 4
+df_entire2019.loc[df_entire2019['id'] == '18328816', 'bedrooms'] = 1
+
+# Create a sub df for a clearer boxplot including listings with 3 or fewer bedrooms and price under 1750
+df_temp2 = df_entire2019[((df_entire2019['bedrooms'] < 4) & (df_entire2019['price'] < 1750))].copy()
+# Check count of listings in sub df, still is the majority
+print(df_temp2.shape)
+
+# Create a boxplot comparing the 2019 prices for superhosts Vs other hosts for this subset
+plt.figure(figsize=(8, 5))
+sns.boxplot(x='bedrooms', y='price', hue='host_is_superhost', data=df_temp2, palette='rainbow')
+plt.title("Price for Superhosts Vs Non-Superhosts")
+plt.show()
+
+# Create a boxplot comparing the 2019 occupancy for superhosts V other hosts for this subset
+plt.figure(figsize=(8, 5))
+sns.boxplot(x='bedrooms', y='occupancy_2019', hue='host_is_superhost', data=df_temp2, palette='rainbow')
+plt.title("Occupancy for Superhosts Vs Non-Superhosts")
+plt.show()
+
+# The 1st boxplot above indicates that for similar sized properties, the median price for superhosts is slightly lower
+# than for hosts who have not achieved superhost status. This surprised me but some web searching indicates that this
+# is generally the case globally.
+# The 2nd boxplot indicates that median occupancy in 2019 for superhosts was much higher than for non superhosts.
+# It may be that superhosts have a better understanding of their market and getting pricing right to optimise price
+# & occupancy for maximum revenue. Some hosts internationally use smart pricing software, and it is likely the case that
+# some Irish hosts are also using it.
+
+# Plot the distribution of the overall review score for df_entire2019.
+plt.figure(figsize=(12, 6))
+sns.displot(data=df_entire2019, x='review_scores_rating')
+plt.xlim(0, 5)
+plt.show()
+
+# We can see that very few listings have an overall review score below 4, and the majority look to be close to the
+# superhost level of 4.8.
+
+# Check To see if there is a difference between superhost verus non superhosts who have a rating of 4.8+
+# Create sub df with only listings with review scores rating >= 4.8
+df_temp3 = df_temp2[(df_temp2['review_scores_rating'] >= 4.8)].copy()
+
+# Create a boxplot comparing the 2019 prices for superhosts V other hosts with 4.8+ rating for this subset
+plt.figure(figsize=(8, 5))
+sns.boxplot(x='bedrooms', y='price', hue='host_is_superhost', data=df_temp3, palette='rainbow')
+plt.title("Price for Superhosts Vs Non-Superhosts")
+plt.show()
+
+# Create a boxplot comparing the 2019 occupancy for superhosts V other hosts with 4.8+ rating for this subset
+plt.figure(figsize=(8, 5))
+sns.boxplot(x='bedrooms', y='occupancy_2019', hue='host_is_superhost', data=df_temp3, palette='rainbow')
+plt.title("Occupancy for Superhosts Vs Non-Superhosts")
+plt.show()
+
+# Above boxplots still indicate it is advantageous for occupancy to be a superhost versus a non superhost with a high
+# review rating
+
+# There are 21 null values in all of the underlying review_scores fields i.e. review_score_accuracy,
+# review_scores_cleanliness etc.  Check the nulls are all in the same rows.
+print(df_entire2019.loc[df_entire2019['review_scores_accuracy'].isna(),
+                        ['review_scores_cleanliness', 'review_scores_checkin', 'review_scores_communication',
+                         'review_scores_location', 'review_scores_value']])
+
+# Drop rows where review_scores_accuracy values are null in a sub df
+df_temp3 = df_entire2019[df_entire2019['review_scores_accuracy'].notna()]
+
+# Create a sub dataframe with just the 7 review score columns and the occupancy_2019 column for input to
+# correlation matrix
+df_temp4 = df_temp3[['occupancy_2019', 'review_scores_rating', 'review_scores_accuracy', 'review_scores_cleanliness',
+                     'review_scores_checkin', 'review_scores_communication', 'review_scores_location',
+                     'review_scores_value']]
+
+# Plot heatmap showing correlation between columns in df_temp4
+corrMatrix = df_temp4.corr()
+sns.heatmap(corrMatrix, annot=True)
+plt.show()
+
+# Most correlated to occupancy are the cleanliness and value scores, followed by the accuracy score.
+# Accuracy, cleanliness, and values all have a correlation coefficient > 0.7 with the overall review score.
+
+# All the review scores are positively correlated with host_is_superhost. Based on the above,
+# and to reduce noise in my dataset, I am going to keep host_is_superhost and review_scores_rating and drop the other
+# underlying review fields. Due to the distribution of the overall review score with most scores between
+# 4 & 5 out of 5, I am going to create bins and an ordered categorical column to better reflect this i.e. 4/5
+# is a bad review not an 80% grade.
+
+# Check min value in review_scores_rating column
+print(df_entire2019['review_scores_rating'].min())
+# Check how many listings have a 0.0 rating
+print(df_entire2019.loc[df_entire2019['review_scores_rating'] == 0, 'id'].count())
+
+# Use pd.cut to create bins with self-defined bin ranges on overall review_scores_rating
+cut_labels = ['<=3', '<=4', '<=4.2', '<=4.4', '<=4.6', '<=4.8', '<=5.0']
+cut_bins = [0.0, 3.0, 4.0, 4.2, 4.4, 4.6, 4.8, 5.0]
+df_entire2019['cut_review_rating'] = pd.cut(df_entire2019['review_scores_rating'], bins=cut_bins, labels=cut_labels,
+                                            include_lowest=True)
+
+# Change new cut_review_rating field to categorical, and order from low to high
+rating_order = CategoricalDtype(categories=['<=3', '<=4', '<=4.2', '<=4.4', '<=4.6', '<=4.8', '<=5.0'], ordered=True)
+df_entire2019['cut_review_rating'] = df_entire2019['cut_review_rating'].astype(rating_order)
+df_entire2019['cut_review_rating'].describe()
+
+# Now drop the no longer required bathrooms_text field and the beds field
+df_entire2019.drop(['review_scores_rating', 'review_scores_accuracy', 'review_scores_cleanliness',
+                    'review_scores_checkin', 'review_scores_communication', 'review_scores_location',
+                    'review_scores_value'], axis=1, inplace=True)
+
+# Check
+df_entire2019.info()
+
+# Also drop host_reponse_time, host_reponse_rate, host_acceptance_rate as many null values and are covered to a degree
+# in host_is_superhost
+df_entire2019.drop(['host_response_time', 'host_response_rate', 'host_acceptance_rate'], axis=1, inplace=True)
+
+# Drop accommodates field as it is highly correlated to bedrooms field (seen earlier)
+df_entire2019.drop(['accommodates'], axis=1, inplace=True)
+
+# Drop reviews_2019 and revenue_2019 as these are highly correlated to occupancy_2019
+df_entire2019.drop(['reviews_2019', 'revenue_2019'], axis=1, inplace=True)
+
+df_entire2019['availability_365'].describe()
+
+# Check relationship between availability_365 and target variable occupancy
+
+# Create a scatter plot to see if there is a relationship between availability (forward looking) and
+# occupancy (historical)
+x = df_entire2019['availability_365']
+y = df_entire2019['occupancy_2019']
+
+plt.scatter(x, y)
+plt.xlabel('Availability Next 365')
+plt.ylabel('Occupancy 2019')
+plt.show()
+
+# Difficult to see relationship in scatter plot, use Linear Regression to calculate correlation coefficient
+# create X and y
+feature_cols = ['availability_365']
+X = df_entire2019[feature_cols]
+y = df_entire2019.occupancy_2019
+
+# follow the usual sklearn pattern: import, instantiate, fit
+lm = LinearRegression()
+lm.fit(X, y)
+
+# print intercept and coefficients
+print("Intercept is", lm.intercept_)
+print("Availability coefficient is", lm.coef_)
+
+df_entire2019['NUTS3_Region'].value_counts()
+
+# There are 32 different region_parent_names and 8 NUTS3_Region names.  I don't think it makes sense to hot encode
+# 32 different regions which will add 32 additonal columns to the dataset. It also may not add insight to the
+# model given the sparsity of listings in some regions.  From my knowledge of Ireland and tourism, the NUTS 3 Regions
+# do not group region_parents together in a way that makes sense for tourism so I have reorganised them in to 12 groups.
+
+df_regions_reconfig = \
+    pd.read_csv(r"C:\Users\jenni\Documents\Datasets\Ireland Oct 21 Airbnb\Failte Ireland\Regions_Reconfigured.csv")
+
+print(df_regions_reconfig)
 
 
 
