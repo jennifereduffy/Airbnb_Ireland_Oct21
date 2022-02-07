@@ -14,6 +14,9 @@ import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
 import missingno as msno
+import re
+from sklearn.linear_model import LinearRegression
+import statsmodels.formula.api as smf
 
 # Import Reviews dataset
 df_reviews = pd.read_csv(r"C:\Users\jenni\Documents\Datasets\Ireland Oct 21 Airbnb\reviews.csv")
@@ -409,10 +412,15 @@ grp_reviews19_listing = df_reviews_2019.groupby(['listing_id', 'quarter_new']).a
 # to flatten the multi-level columns
 grp_reviews19_listing.reset_index(inplace=True)
 
+# Rename columns
+grp_reviews19_listing.columns = ['listing_id', 'quarter_new', 'listing_id_count']
+
 print(grp_reviews19_listing.head())
 
 # Change quarter column to string dtype
 grp_reviews19_listing['quarter_new'] = grp_reviews19_listing['quarter_new'].astype('str')
+
+grp_reviews19_listing.info()
 
 # Pivot to have listing_id in one column and each quarter be reflected in a column
 grp_reviews19_listing = pd.pivot_table(grp_reviews19_listing, values='listing_id_count', index='listing_id',
@@ -481,10 +489,155 @@ df_listings2019['revenue_2019'] = round((df_listings2019['occupancy_2019'] * df_
 
 print(df_listings2019.head(5))
 
-# create a revenue (in thousands) column using the new occupancy column values multiplied by the price
-df_listings2019['revenue_2019'] = round((df_listings2019['occupancy_2019'] * df_listings2019['price']) / 1000, 1)
+# Check hw many of each room_type in df_listings2019
+df_listings2019['room_type'].value_counts()
 
-df_listings2019.head(5)
+# Create a copy of df_listings2019 with just entire homes for boxplot
+df_entire2019 = df_listings2019.loc[df_listings2019['room_type'] == 'Entire home/apt'].copy()
+
+# Create boxplot to show overall distribution of estimated annual occupancy in days for listings active throughout 2019
+# by NUTS3 Region
+plt.figure(figsize=(15, 15))
+sns.color_palette("flare", as_cmap=True)
+sns.boxplot(x=df_entire2019['NUTS3_Region'], y=df_entire2019['occupancy_2019'])
+plt.show()
+
+# Although some listings may not be available all year round, and their low occupancy may not be a reflection of
+# low demand, this graph suggests the high occupancy levels which are possible.  In Dublin 50% of the entire
+# home listings were occupied for over 140 days per year in 2019 and for many listings the occupancy was capped
+# out at 70% by the maximum assumption made.  Compared to the relatively narrow range for price, there may be
+# more scope to increase revenue by trying to maximise occupancy.
+
+# Further review and clean main listings dataset with a view to machine learning
+
+df_entire2019.info()
+
+# Fill null values in host_since field with value in first_review field
+df_entire2019.loc[df_entire2019['host_since'].isna(), 'host_since'] = df_entire2019['first_review']
+
+# Create duration_as_host field based on days between date data was scraped and 'host_since'
+dt1 = pd.to_datetime('22-10-2021')
+df_entire2019['duration_as_host'] = round((dt1 - df_entire2019['host_since']).dt.days, 0)
+
+# Convert dtype to integer
+df_entire2019['duration_as_host'] = df_entire2019['duration_as_host'].astype('int')
+
+# Eliminate some columns that won't be used in any model to predict occupancy to reduce noise at this stage.
+# Some of these were used to derive the current subset of df_listings and are now implicit or captured by other
+# columns.  Others such as description and latitude/longitude are not suitable for machine learning but may be
+# reintroduced later.
+
+columns_to_drop = ['description', 'latitude', 'longitude', 'room_type', 'number_of_reviews_ltm', 'first_review',
+                   'last_review', '2019Q1', '2019Q2', '2019Q3', '2019Q4', 'host_since']
+df_entire2019.drop(columns=columns_to_drop, inplace=True)
+
+# change id column to string as the values are listing identifiers not integers
+df_entire2019['id'] = df_entire2019['id'].astype('str')
+
+# Convert values in host_about to either 1 or 0 rather than narrative or null value i.e. they have completed
+# this field or not as this may add a personal touch that may make a difference
+df_entire2019.host_about.fillna(0, inplace=True)
+df_entire2019['host_about'] = df_entire2019['host_about'].apply(lambda v: 1 if v != 0 else 0)
+
+df_entire2019['host_is_superhost'].value_counts()
+
+# Convert to numerical column, f = False = 0, t = True = 1
+d = {'f': 0, 't': 1}
+df_entire2019['host_is_superhost'] = df_entire2019['host_is_superhost'].map(d).\
+    fillna(df_entire2019['host_is_superhost'])
+
+# 'bedrooms' column has null values but accommodates column does not.
+# Use groupby to see the relationships between how many people a listing accommodates and how many
+# bedrooms for those rows which do not have null value under bedrooms.
+df_impute = df_entire2019.loc[df_entire2019['bedrooms'].notna(), :]
+df_impute.groupby('bedrooms')[['accommodates']].median()
+
+# We can see that using the median, the rule of thumb looks to be that each bedroom accommodates 2 people and
+# there looks to be a cap on accommodates field of 16.
+
+# Check if there is a max value of 16 in the accommodates field
+print(df_listings['accommodates'].max())
+
+# In August 2020, Airbnb wrote "Today we’re announcing a global ban on all parties and events at Airbnb listings,
+# including a cap on occupancy at 16...."
+
+# Fill missing values in the bedrooms field with the value in the accommodates field divided by 2
+df_entire2019['bedrooms'].fillna(value=(df_entire2019['accommodates']//2), inplace=True)
+
+# Check unique entries in bathrooms_text
+df_entire2019['bathrooms_text'].unique()
+
+# Replace Half-bath with 0.5 baths
+df_entire2019['bathrooms_text'].replace({'Half-bath': '0.5 baths'}, inplace=True)
+
+# Check how many listings have '0 baths'
+df_entire2019['bathrooms_text'].value_counts()
+
+# Take a look at the 0 bath rows:
+print(df_entire2019.loc[df_entire2019['bathrooms_text'] == "0 baths", ['id', 'property_type', 'bedrooms']])
+
+# Above some of the 0 baths listings look like errors.  Others look like they are camping & similar property types.
+# For the camping type properties, keep 0 baths.
+
+# Where bathrooms_text has 0 baths and the property_type is in list1, replace with 'MissingData'.
+
+list1 = ['Entire residential home', 'Entire rental unit', 'Entire cottage', 'Entire townhouse',
+         'Entire guest suite', 'Entire bed and breakfast', 'Entire bungalow']
+for i in list1:
+    df_entire2019.loc[(df_entire2019['bathrooms_text'] == "0 baths") &
+                      (df_entire2019['property_type'] == i), 'bathrooms_text'] = 'MissingData'
+
+# Use regex to isolate the numeric element of bathrooms_text.  Test on examples first
+example1 = '3.5 baths'
+print(re.findall(r'\s*[a-zA-Z]+', example1))
+
+example2 = '1 bath'
+print(re.findall(r'\s*[a-zA-Z]+', example2))
+
+# Use list comprehension with regex tested above to extract the numerical element of bathrooms_text and append
+# it to a new list called bathrooms_new
+bathrooms_new = []
+for row in df_entire2019['bathrooms_text']:
+    if row == 'MissingData':
+        number = 'MissingData'
+    else:
+        str1 = re.findall(r'\s*[a-zA-Z]+', row)
+        number = row.replace(str1[0], "")
+    bathrooms_new.append(number)
+
+# Create a new column in df_entire2019 with just the numeric part of bathrooms_text and call it bathrooms_new
+df_entire2019['bathrooms_new'] = bathrooms_new
+
+df_entire2019['bathrooms_new'].value_counts()
+
+# Drop the rows with MissingData in the bathrooms_new field
+df_entire2019.drop(df_entire2019[df_entire2019['bathrooms_new'] == 'MissingData'].index, inplace=True)
+
+# Now drop the no longer required bathrooms_text field and the beds field
+df_entire2019.drop(['beds', 'bathrooms_text'], axis=1, inplace=True)
+
+df_entire2019['property_type'].value_counts()
+
+# Create a list of the camping style properties to drop the listings with these types
+values = ["Hut", "Camper/RV", "Campsite", "Yurt", "Treehouse", "Tent", "Train", "Cave", "Shepherd's hut",
+          "Bus", "Tipi"]
+# Keep rows that don't contain any value in the list
+df_entire2019 = df_entire2019[df_entire2019['property_type'].isin(values) == False]
+
+# Take a look at values in maximum nights column, majority are set to max value allowable of 1125.
+# It is low maximum nights that could have an influence on occupancy so I'm interested in the low
+# end of the range.
+
+# Use bins in histogram to see how the data is distributed across listings with max nights up to 90 nights
+bins_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 28, 30, 32, 34,
+             36, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90]
+plt.hist(df_entire2019['maximum_nights'], bins=bins_list)
+
+# If maximum_nights > 90, change to 90 as a new imposed cap on the basis that whether the max nights is 90
+# or the max (1125),this should not make any notable difference
+df_entire2019.loc[df_entire2019['maximum_nights'] > 90, 'maximum_nights'] = 90
+
+
 
 
 
