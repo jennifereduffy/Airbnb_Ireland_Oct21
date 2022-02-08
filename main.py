@@ -16,8 +16,31 @@ import seaborn as sns
 import missingno as msno
 import re
 from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split
+# sys.modules['sklearn.externals.six'] = six
 import statsmodels.formula.api as smf
+import statsmodels.api as sma
 from pandas.api.types import CategoricalDtype
+from collections import Counter
+import math
+import scipy.stats as ss
+import category_encoders as ce
+# import six
+import sys
+import graphviz
+# from sklearn.tree import DecisionTreeClassifier, export_graphviz
+from sklearn.tree import DecisionTreeRegressor, export_graphviz
+from sklearn import tree
+from sklearn.model_selection import train_test_split,GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, confusion_matrix, roc_curve, roc_auc_score
+from sklearn.externals.six import StringIO
+from sklearn.decomposition import PCA
+from IPython.display import Image
+from sklearn.tree import export_graphviz
+import pydotplus
+import os
+os.environ['PATH'] = os.environ['PATH']+';'+os.environ['CONDA_PREFIX']+r"\Library\bin\graphviz"
 
 # Import Reviews dataset
 df_reviews = pd.read_csv(r"C:\Users\jenni\Documents\Datasets\Ireland Oct 21 Airbnb\reviews.csv")
@@ -863,6 +886,453 @@ df_regions_reconfig = \
     pd.read_csv(r"C:\Users\jenni\Documents\Datasets\Ireland Oct 21 Airbnb\Failte Ireland\Regions_Reconfigured.csv")
 
 print(df_regions_reconfig)
+
+# Merge df_entire2019 with df_regions_reconfig to bring in the new_region
+df_entire2019 = df_entire2019.merge(df_regions_reconfig[['region_parent_name', 'new_region']], how='left',
+                                    on='region_parent_name').drop(columns=['region_parent_name'])
+
+# Check
+print(df_entire2019.head())
+df_entire2019['new_region'].value_counts()
+
+# Now drop old region columns
+df_entire2019.drop(['region_name', 'NUTS3_Region'], axis=1, inplace=True)
+
+# Get one hot encoding new_region columns
+# I don't think it makes sense to set drop_first = True here based on my reading since I have 12
+# unique regions, the model may miss out on the excluded region as a feature.
+one_hot = pd.get_dummies(df_entire2019['new_region'], prefix='region')
+
+# Drop region_new column as it is now encoded
+df_entire2019 = df_entire2019.drop('new_region', axis=1)
+
+# Join the encoded df
+df_entire2019 = df_entire2019.join(one_hot)
+
+# Review
+print(df_entire2019.head())
+
+# The 'amenities' column contains values in each row which are lists of amenities in the format
+# ["Hangers","TV","Heating",......]. Pandas does not have direct access to every individual element
+# of the lists. Thus, Pandas is unable to apply functions like value_counts() properly.
+
+# Pandas reads lists as strings, not as lists, which prevents being able to loop through the lists to count
+# unique values or frequencies.  Have a look.
+for i, l in enumerate(df_entire2019["amenities"]):
+    print("list", i, "is", type(l))
+
+# Given the way the strings in the amenities field are formatted, I can use apply and eval functions.
+# The eval function evaluates the string like a python expression and returns the result as an integer.
+df_entire2019['amenities'] = df_entire2019['amenities'].apply(eval)
+
+# Recheck data type of df_entire2019['amenities']
+for i, l in enumerate(df_entire2019["amenities"]):
+    print("list", i, "is", type(l))
+
+# to get a list of the unique amenities in the lists in the amenities field and value counts of how
+# frequently each amenity appears, create an empty dictionary and loop through each list in
+# df_entire2019['amenities'] adding each amenity to the dictionary the first time it is found and
+# adding 1 to the dictionary value each subsequent time it is found
+amenities_dict = {}
+for i in df_entire2019['amenities']:
+    for j in i:
+        if j not in amenities_dict:
+            amenities_dict[j] = 1
+        else:
+            amenities_dict[j] += 1
+
+# Convert amenities dictionary to dataframe
+df_amenities = pd.DataFrame(list(amenities_dict.items()), columns=['amenity', 'frequency_amenity'])
+
+# Review top amenities by frequency.  Recall only 7,364 listings in dataframe so not interesting
+# for model if most listings have the amenity.
+df_amenities.sort_values(by=['frequency_amenity'], inplace=True, ascending=False)
+print(df_amenities.head(50))
+
+# Drop amenities where 95% or more of the listings have the amenity as there is very little variance
+# so it won't help to predict the target variable
+df_amenities.drop(df_amenities[df_amenities['frequency_amenity'] > 6995].index, inplace=True)
+# Similarly, drop amenities where 5% or less of the listings have the amenity
+df_amenities.drop(df_amenities[df_amenities['frequency_amenity'] < 368].index, inplace=True)
+
+# Reset index and review
+df_amenities.reset_index(drop=True, inplace=True)
+print(df_amenities)
+
+# Drop rows with inconsequential amenities unlikely to affect a choice of airbnb or ones covered by other independent
+# variables
+
+# define values
+values = ["Hangers", "Iron", "Hair dryer", "Long term stays allowed", "Shampoo", "First aid kit",
+          "Hot water kettle", "Shower gel", "Children’s dinnerware", "Baking sheet", "Body soap",
+          "Barbecue utensils"]
+
+# drop rows that contain any value in the list
+df_amenities = df_amenities[df_amenities.amenity.isin(values) == False]
+
+
+# Create a dataframe where rows stay the same as before, but where every amenity is assigned its own column.
+# If only the first listing has an EV charger, the EV charger column would have a “True” value at row 1
+# and “False” values everywhere else.
+
+# In this context, unique_items should be a dict with all amenities as keys. The .keys() function creates a
+# list of all the amenity names, which will be used as column names.
+
+# First create a custom function to do this
+def boolean_df(item_lists, unique_items):
+    # Create empty dict
+    bool_dict = {}
+
+    # Loop through all the tags
+    for s, item in enumerate(unique_items):
+        # Apply boolean mask
+        bool_dict[item] = item_lists.apply(lambda m: item in m)
+
+    # Return the results as a dataframe
+    return pd.DataFrame(bool_dict)
+
+
+# Create a subset of df_entire2019 with just the amenities column
+df_entire_amenities = df_entire2019[['amenities']]
+
+# Check output
+df_entire_amenities.info()
+# Check output 2
+print(df_entire_amenities.head())
+
+# Apply new custom function to df_entire_amenities to get a column with boolean values True or
+# False for every amenity for every listing in df_entire2019
+df_amenities_bool2 = boolean_df(df_entire_amenities['amenities'], amenities_dict.keys())
+
+# Check output
+print(df_amenities_bool2.head())
+# We only want to retain the amenities we decided were of interest above.  Get list of those we want to keep.
+df_amenities['amenity'].unique()
+
+# Drop all amenities columns except those in the list to keep (more culled here as too busy)
+final_table_columns = ['Heating', 'Hot water', 'Wifi', 'Private entrance', 'Free parking on premises',
+                       'Free street parking', 'Paid parking off premises', 'Oven', 'Coffee maker',
+                       'Washer', 'Dryer', 'Dishwasher', 'TV', 'Cable TV', 'Dining table', 'Bathtub',
+                       'Dedicated workspace', 'Indoor fireplace', 'Backyard', 'Outdoor dining area',
+                       'Patio or balcony', 'High chair', 'Crib', 'Waterfront']
+
+df_amenities_bool2.drop(columns=[col for col in df_amenities_bool2 if col not in final_table_columns], inplace=True)
+
+# Now we have table which exactly matches the rows in df_entire2019 which has a column for each
+# amenity of initial interest with Boolean Values
+df_amenities_bool2.info()
+
+# Convert all values if df_amenities_bool2 from booleans to 1s and 0s.
+df_amenities_bool2 = df_amenities_bool2.astype(int)
+
+# Merge df_amenities_bool2 with df_entire2019 to bring in the occupancy_2019 column to look at 'correlation' if any
+# between the selected amenities and occupancy
+df_amenities_bool2 = df_amenities_bool2.merge(df_entire2019[['occupancy_2019']], how='left', left_index=True,
+                                              right_index=True)
+# Looking for a way to correlate the amenities with occupancy, I googled for help given amenities
+# are categorical features
+# Sources: https://towardsdatascience.com/the-search-for-categorical-correlation-a1cf7f1888c9 &
+# https://www.kaggle.com/shakedzy/alone-in-the-woods-using-theil-s-u-for-survival
+
+# Theil's U, also known as the Uncertainty Coefficient provides a value in the range of [0,1],
+# where 0 means that feature y provides no information about feature x, and 1 means that feature y
+# provides full information abpout features x's value.
+
+
+def conditional_entropy(x, y):
+    # entropy of x given y
+    y_counter = Counter(y)
+    xy_counter = Counter(list(zip(x, y)))
+    total_occurrences = sum(y_counter.values())
+    entropy = 0
+    for xy in xy_counter.keys():
+        p_xy = xy_counter[xy] / total_occurrences
+        p_y = y_counter[xy[1]] / total_occurrences
+        entropy += p_xy * math.log(p_y/p_xy)
+    return entropy
+
+
+def theil_u(x, y):
+    s_xy = conditional_entropy(x, y)
+    x_counter = Counter(x)
+    total_occurrences = sum(x_counter.values())
+    p_x = list(map(lambda n: n/total_occurrences, x_counter.values()))
+    s_x = ss.entropy(p_x)
+    if s_x == 0:
+        return 1
+    else:
+        return (s_x - s_xy) / s_x
+
+
+theilu = pd.DataFrame(index=['occupancy_2019'], columns=df_amenities_bool2.columns)
+columns = df_amenities_bool2.columns
+for j in range(0, len(columns)):
+    u = theil_u(df_amenities_bool2['occupancy_2019'].tolist(), df_amenities_bool2[columns[j]].tolist())
+    theilu.loc[:, columns[j]] = u
+theilu.fillna(value=np.nan, inplace=True)
+plt.figure(figsize=(20, 1))
+sns.heatmap(theilu, annot=True, fmt='.2f')
+plt.show()
+
+# Based on above, the selected amenities do not appear to give much information about occupancy but keep those
+# where Theil's U is 0.01 and drop those where it is 0.0
+columns_to_drop = ['Heating', 'Private entrance', 'Free street parking', 'Paid parking off premises', 'Dryer',
+                   'TV', 'Cable TV', 'Dining table', 'Bathtub', 'Backyard', 'Outdoor dining area',
+                   'Patio or balcony', 'High chair', 'Crib', 'Waterfront']
+
+df_amenities_bool2.drop(columns=[col for col in df_amenities_bool2 if col in columns_to_drop], inplace=True)
+
+# Check
+print(df_amenities_bool2.shape)
+df_amenities_bool2.info()
+
+# Drop the occupancy column before concatenating with df_entire2019
+df_amenities_bool2.drop(columns=(['occupancy_2019']), axis=1, inplace=True)
+
+# Add the amenities columns to df_entire2019 to have them as part of our main dataset using concatenate, as all the
+# rows are a direct match
+df_entire2019 = pd.concat([df_entire2019, df_amenities_bool2], axis=1)
+
+# Drop the original amenities column and the id column
+df_entire2019.drop(columns=(['id', 'amenities']), axis=1, inplace=True)
+
+# Convert bathrooms_new to type float
+df_entire2019['bathrooms_new'] = df_entire2019['bathrooms_new'].astype('float')
+
+# Check values in 'cut_review_rating' as these are ranges and not suitable for ML?
+df_entire2019['cut_review_rating'].unique()
+
+
+# Define function for ordinal encoding
+def ordinal_encoder(data, feature, feature_rank):
+    ordinal_dict = {}
+
+    for i, feature_value in enumerate(feature_rank):
+        ordinal_dict[feature_value] = i + 1
+
+    data[feature] = data[feature].map(lambda x: ordinal_dict[x])
+
+    return data
+
+
+# Use ordinal encoding function on cut_review_rating column to convert to integers with an order
+# from lowest to highest review ratings
+ordinal_encoder(df_entire2019, 'cut_review_rating', ['<=3', '<=4', '<=4.2', '<=4.4', '<=4.6', '<=4.8',
+                                                     '<=5.0']).head()
+
+df_entire2019.info()
+
+# Use Linear Regression on the Cleaned Dataset to see how it fares in predicting occupancy
+
+# Create X and Y
+X = df_entire2019[['host_about', 'host_is_superhost', 'bedrooms', 'price', 'minimum_nights', 'maximum_nights',
+                   'number_of_reviews', 'instant_bookable', 'duration_as_host', 'bathrooms_new',
+                   'cut_review_rating', 'region_Dublin Border', 'region_Dublin City', 'region_Dublin County',
+                   'region_Galway & Cork Cities', 'region_Mid East', 'region_Mid North', 'region_Mid West',
+                   'region_North West', 'region_South East', 'region_South West', 'region_West',
+                   'Free parking on premises', 'Hot water', 'Dedicated workspace', 'Wifi', 'Washer',
+                   'Oven', 'Indoor fireplace', 'Dishwasher', 'Coffee maker']].copy()
+
+Y = df_entire2019[['occupancy_2019']].copy()
+
+# Creating a train and test dataset
+X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=101)
+print(X_train.shape)
+print(X_test.shape)
+print(Y_train.shape)
+print(Y_test.shape)
+
+# follow the usual sklearn pattern: import, instantiate, fit
+mul_reg_model = LinearRegression()
+mul_reg_model.fit(X, Y)
+
+# print intercept and coefficients
+print("Intercept is {:.5f}".format(mul_reg_model.intercept_))
+
+print('Coefficients: \n', mul_reg_model.coef_)
+
+# Coefficients are all > 1 which doesn't make sense, however, try to predict as a baseline before
+# trying other models
+
+# Predict
+predictions = mul_reg_model.predict(X_test)
+
+# Plot
+sns.regplot(x=y_test, y=predictions)
+
+# Review R-squared and Adjusted R-squared
+X_train_Sm= sma.add_constant(X_train)
+X_train_Sm= sma.add_constant(X_train)
+ls=sma.OLS(y_train, X_train_Sm).fit()
+print(ls.summary())
+
+# R-squared values are typically used as a measure of the effectiveness of a model. Hence, a high
+# R-squared value (anything above 55%), can be an indicator of a capable model.
+# However, R-squared is not meant to actually reflect the reliability of the statistical model.
+# It merely reflects how many of the data points lie on the regression line. Hence, a model with an
+# R-squared of 0.55 would mean that 55% of the residuals lie on the line of fit.
+# Adjusted R-squared also indicates how well terms fit a curve or line, but adjusts for the number
+# of terms in a model.
+
+#  Let's create a DataFrame for the proposed house in Laragh 180 days post listing assuming 10 reviews
+#  have been generated and superhost status achieved with a price of €300 per night.
+#  What is the predicted annual occupancy?
+X_new = pd.DataFrame({'host_about': [1], 'host_is_superhost': [1.0],  'bedrooms': [2], 'price': [300.0],
+                      'minimum_nights': [2], 'maximum_nights': [90], 'number_of_reviews': [10],
+                      'instant_bookable': [1], 'duration_as_host': [180], 'bathrooms_new': [2.0],
+                      'cut_review_rating': [6], 'region_Dublin Border': [1], 'region_Dublin City': [0],
+                      'region_Dublin County': [0], 'region_Galway & Cork Cities': [0], 'region_Mid East': [0],
+                      'region_Mid North': [0], 'region_Mid West': [0], 'region_North West': [0],
+                      'region_South East': [0], 'region_South West': [0], 'region_West': [0],
+                      'Free parking on premises': [1], 'Hot water': [1], 'Dedicated workspace': [1],
+                      'Wifi': [1], 'Washer': [1], 'Oven': [1], 'Indoor fireplace': [1], 'Dishwasher': [1],
+                      'Coffee maker': [1]})
+
+# use the model to predict occupancy
+mul_reg_model.predict(X_new)
+
+#  Let's change superhost status to 0 and see if this changes the prediction
+X2_new = pd.DataFrame({'host_about': [1], 'host_is_superhost': [0.0],  'bedrooms': [2], 'price': [300.0],
+                      'minimum_nights': [2], 'maximum_nights': [90], 'number_of_reviews': [10],
+                      'instant_bookable': [1], 'duration_as_host': [180], 'bathrooms_new': [2.0],
+                      'cut_review_rating': [6], 'region_Dublin Border': [1], 'region_Dublin City': [0],
+                      'region_Dublin County': [0], 'region_Galway & Cork Cities': [0], 'region_Mid East': [0],
+                      'region_Mid North': [0], 'region_Mid West': [0], 'region_North West': [0],
+                      'region_South East': [0], 'region_South West': [0], 'region_West': [0],
+                      'Free parking on premises': [1], 'Hot water': [1], 'Dedicated workspace': [1],
+                      'Wifi': [1], 'Washer': [1], 'Oven': [1], 'Indoor fireplace': [1], 'Dishwasher': [1],
+                      'Coffee maker': [1]})
+
+# Check new prediction
+mul_reg_model.predict(X2_new)
+# Changing superhost status reduces the predicted price by €20/night
+
+# Let's put superhost status back to 1 and price up to 400
+X3_new = pd.DataFrame({'host_about': [1], 'host_is_superhost': [1.0],  'bedrooms': [2], 'price': [400.0],
+                      'minimum_nights': [2], 'maximum_nights': [90], 'number_of_reviews': [10],
+                      'instant_bookable': [1], 'duration_as_host': [180], 'bathrooms_new': [2.0],
+                      'cut_review_rating': [6], 'region_Dublin Border': [1], 'region_Dublin City': [0],
+                      'region_Dublin County': [0], 'region_Galway & Cork Cities': [0], 'region_Mid East': [0],
+                      'region_Mid North': [0], 'region_Mid West': [0], 'region_North West': [0],
+                      'region_South East': [0], 'region_South West': [0], 'region_West': [0],
+                      'Free parking on premises': [1], 'Hot water': [1], 'Dedicated workspace': [1],
+                      'Wifi': [1], 'Washer': [1], 'Oven': [1], 'Indoor fireplace': [1], 'Dishwasher': [1],
+                      'Coffee maker': [1]})
+
+# Check new prediction
+mul_reg_model.predict(X3_new)
+# 3 day decline in occupancy predicted for 33% increase in price
+
+# we will use Sklearn module to implement decision tree algorithm. Sklearn uses CART
+# (classification and Regression trees) algorithm and by default it uses Gini impurity as a criteria
+# to split the nodes.
+
+# Create X1 and Y1
+
+X1 = df_entire2019[['host_about', 'host_is_superhost', 'bedrooms', 'price', 'minimum_nights', 'maximum_nights',
+                    'number_of_reviews', 'instant_bookable', 'duration_as_host', 'bathrooms_new',
+                    'cut_review_rating', 'region_Dublin Border', 'region_Dublin City', 'region_Dublin County',
+                    'region_Galway & Cork Cities', 'region_Mid East', 'region_Mid North', 'region_Mid West',
+                    'region_North West', 'region_South East', 'region_South West', 'region_West',
+                    'Free parking on premises', 'Hot water', 'Dedicated workspace', 'Wifi', 'Washer', 'Oven',
+                    'Indoor fireplace', 'Dishwasher', 'Coffee maker']]
+
+Y1 = df_entire2019['occupancy_2019']
+
+X1_train, X1_test, Y1_train, Y1_test = train_test_split(X1, Y1, test_size=0.10, random_state=12004567)
+
+# Fitting Decision Tree Regression to the dataset
+regressor = DecisionTreeRegressor()
+regressor.fit(X1_train, Y1_train)
+
+feature_name=list(X1.columns)
+target_name = list(Y1_train.unique())
+print(feature_name)
+print(target_name)
+
+# create a dot_file which stores the tree structure
+dot_data = export_graphviz(regressor, feature_names=feature_name, rounded=True, filled=True)
+# Draw graph
+graph = pydotplus.graph_from_dot_data(dot_data)
+graph.write_png("myTree.png")
+# Show graph
+Image(graph.create_png())
+
+# confirm score of 1.0 for training data
+regressor.score(X1_train, Y1_train)
+
+# Predicting the values of test data
+Y1_pred = regressor.predict(X1_test)
+
+# accuracy of our regression tree
+regressor.score(X1_test, Y1_test)
+
+df = pd.DataFrame({'Real Values':Y1_test, 'Predicted Values':Y1_pred})
+print(df.head(20))
+
+# Scale the data
+scalar = StandardScaler()
+X1_transform = scalar.fit_transform(X1)
+
+# use PCA for feature selection and see if it improves our accuracy
+pca = PCA()
+principalComponents = pca.fit_transform(X1_transform)
+plt.figure()
+plt.plot(np.cumsum(pca.explained_variance_ratio_))
+plt.xlabel('Number of Components')
+plt.ylabel('Variance (%)')  # for each component
+plt.title('Explained Variance')
+plt.show()
+
+# Graph seems to indicate that most of the features are impacting the variance
+# We can see that around 95% of the variance is being explained by 28 components. So instead of giving
+# all columns as input in our algorithm let's use these 28 components instead.
+
+pca = PCA(n_components=28)
+new_data = pca.fit_transform(X1_transform)
+
+principal_X1 = pd.DataFrame(new_data, columns=['PC-1', 'PC-2', 'PC-3', 'PC-4', 'PC-5', 'PC-6', 'PC-7',
+                                               'PC-8', 'PC-9', 'PC-10', 'PC-11', 'PC-12', 'PC-13', 'PC-14',
+                                               'PC-15', 'PC-16', 'PC-17', 'PC-18', 'PC-19', 'PC-20', 'PC-21',
+                                               'PC-22', 'PC-23', 'PC-24', 'PC-25', 'PC-26', 'PC-27', 'PC-28'])
+
+principal_X1.head()
+
+# let's see how well our model perform on this new data
+X1_train, X1_test, Y1_train, Y1_test = train_test_split(principal_X1, Y1, test_size=0.10, random_state=12004567)
+regressor = DecisionTreeRegressor()
+regressor.fit(X1_train, Y1_train)
+regressor.score(X1_test, Y1_test)
+
+df = pd.DataFrame({'Real Values':Y1_test, 'Predicted Values': Y1_pred})
+
+df.describe()
+
+# try to tune some hyperparameters using the GridSearchCV algorithm
+# we are tuning three hyperparameters right now, we are passing the different values for both parameters
+grid_param = {
+    'criterion': ['entropy'],
+    'max_depth': range(2, 40, 1),
+    'min_samples_leaf': range(1, 10, 1),
+    'min_samples_split': range(2, 20, 1),
+    'splitter': ['best', 'random']
+}
+
+grid_search = GridSearchCV(estimator=regressor, param_grid=grid_param, cv=5, n_jobs=-1)
+
+grid_search.fit(X1_train, Y1_train)
+
+best_parameters = grid_search.best_params_
+print(best_parameters)
+
+grid_search.best_score_
+
+
+
+
+
+
+
 
 
 
