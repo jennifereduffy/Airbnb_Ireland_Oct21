@@ -27,20 +27,19 @@ import scipy.stats as ss
 import category_encoders as ce
 # import six
 import sys
-import graphviz
+# import graphviz # Have installed software and this is installed in my project environment but ModuleNotFoundError
 # from sklearn.tree import DecisionTreeClassifier, export_graphviz
 from sklearn.tree import DecisionTreeRegressor, export_graphviz
 from sklearn import tree
 from sklearn.model_selection import train_test_split,GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_curve, roc_auc_score
-from sklearn.externals.six import StringIO
+# from sklearn.externals.six import StringIO
 from sklearn.decomposition import PCA
 from IPython.display import Image
 from sklearn.tree import export_graphviz
 import pydotplus
-import os
-os.environ['PATH'] = os.environ['PATH']+';'+os.environ['CONDA_PREFIX']+r"\Library\bin\graphviz"
+
 
 # Import Reviews dataset
 df_reviews = pd.read_csv(r"C:\Users\jenni\Documents\Datasets\Ireland Oct 21 Airbnb\reviews.csv")
@@ -1147,7 +1146,7 @@ mul_reg_model = LinearRegression()
 mul_reg_model.fit(X, Y)
 
 # print intercept and coefficients
-print("Intercept is {:.5f}".format(mul_reg_model.intercept_))
+print(mul_reg_model.intercept_)
 
 print('Coefficients: \n', mul_reg_model.coef_)
 
@@ -1158,12 +1157,12 @@ print('Coefficients: \n', mul_reg_model.coef_)
 predictions = mul_reg_model.predict(X_test)
 
 # Plot
-sns.regplot(x=y_test, y=predictions)
+sns.regplot(x=Y_test, y=predictions)
 
 # Review R-squared and Adjusted R-squared
 X_train_Sm= sma.add_constant(X_train)
 X_train_Sm= sma.add_constant(X_train)
-ls=sma.OLS(y_train, X_train_Sm).fit()
+ls=sma.OLS(Y_train, X_train_Sm).fit()
 print(ls.summary())
 
 # R-squared values are typically used as a measure of the effectiveness of a model. Hence, a high
